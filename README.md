@@ -1,4 +1,4 @@
-# Caliper-SQL-generator
+# Agentic SQL generator for Caliper
 
 ## Instructions for using the repository
 ```
