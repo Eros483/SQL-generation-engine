@@ -1,0 +1,9 @@
+langchain 
+langchain[google-genai]
+langchain-community 
+sqlalchemy
+mysql-connector-python
+pymysql
+cryptography
+langgraph
+fastapi

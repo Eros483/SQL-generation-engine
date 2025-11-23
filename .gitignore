@@ -1,0 +1,5 @@
+*.sql
+*.env
+notebook/
+__pycache__/
+logs/
