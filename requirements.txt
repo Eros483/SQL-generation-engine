@@ -7,3 +7,6 @@ pymysql
 cryptography
 langgraph
 fastapi
+faiss-cpu
+langchain-google-genai
+networkx

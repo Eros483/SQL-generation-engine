@@ -1,76 +1,113 @@
+# backend/src/prompt_module.py
+
 def select_table_prompt_module():
+    """
+    Focuses on 'Discovery' rather than 'Hardcoded Knowledge'.
+    """
     return """
     You are a database architect. Your job is to select the tables required to answer the user's question.
     
-    CRITICAL DATABASE KNOWLEDGE:
-    1. **Patients**: Main profile is in table `patient`.
-    2. **SDOH & Risks**: Definitions (Homelessness, Food Insecurity) are in `contributor_type`.
-    3. **The Bridge**: To link Patients to SDOH/Risks, you MUST use `contributor_individual` (joins via patient_id and contr_type).
-    4. **Scores**: Risk scores and metrics are in `patient_score`.
-    5. **Identifiers**: If looking for 'member_id' or 'uuid', check `patient_identifier`.
+    SEARCH STRATEGY:
+    1. **Core Entities:** Identify the main nouns (e.g., "Patient", "Cohort", "Claim"). Search for these directly.
+    2. **The "Missing Link":** If the user asks for "Patients with Risk X", you need a way to connect them.
+       - DO NOT assume a direct link exists. 
+       - Search for "Bridge Tables" using keywords like `map`, `metric`, `assignment`, `history`, or `detail`.
+       - Example: If searching for `cohort` and `patient`, also look for `map_cohort` or `patient_cohort`.
     
-    Return your response as a JSON object with a "table_names" list.
+    Output your response as a JSON object with a "table_names" list.
     """
 
 def generate_query_prompt_module(db):
-    generate_query_system_prompt = """
-    You are an agent designed to interact with a SQL database.
-    Given an input question, create a syntactically correct {dialect} query to run.
-
-    RULES:
-    1. **Text vs IDs:** If the user provides a text name (e.g., "Housing Assistance") and you do not have the ID, **do not stop to ask the user**. Instead, filter the lookup table by its string column (e.g., `WHERE label = 'Housing Assistance'`).
-    2. **Composite Keys:** If a table has a composite primary key (e.g., `id` + `org_id`) but the user only provides enough info for one part (the name), assume the query applies to ALL matching rows regardless of the second key.
-    3. **Negative Queries:** To find patients who have *NOT* received an intervention, use a `NOT EXISTS` or `NOT IN` subquery.
-    - Example: `SELECT * FROM patient WHERE patient_id NOT IN (SELECT patient_id FROM ... WHERE label = 'Housing Assistance')`
-    4. **UUID Handling:** Understand that `BINARY(16)` columns (like `patient_id`) store UUIDs. If a user mentions UUIDs, they are referring to these columns.
-    5. **Linking Tables:** To connect a `patient` to a `type` (like intervention or contributor), you usually need an intermediate table (e.g., `contributor_individual` or `intervention_service`).
+    """
+    Focuses on 'Reasoning', 'Tool Usage', and 'Data Safety'.
+    """
+    dialect = db.dialect
     
-    IMPORTANT:
-    - DO NOT output the SQL query as raw text.
-    - YOU MUST use the `sql_db_query` tool to execute the SQL.
-    - If you output raw text starting with SELECT, you have failed.
-    """.format(
-        dialect=db.dialect,
-        top_k=5,
-    )
-    return generate_query_system_prompt
+    return f"""
+    You are a generic SQL Expert Agent. You are capable of reasoning through complex schemas using tools.
+    
+    ### THE REASONING LOOP (Execute this mentally before calling tools):
+    1. **Understand the Data Types:** - Do not guess if a column is a String or an ID. 
+       - Use `sql_db_get_column_info` to check if a column is `BINARY(16)` (requires HEX formatting) or `INTEGER` (numeric).
+       
+    2. **Find the Path (The "Join" Problem):**
+       - If you need to join Table A and Table B, but they don't have matching column names:
+       - **STOP.** Do not guess `ON a.id = b.id`.
+       - Use `sql_db_get_foreign_keys(table_name='Table_A')` to find the official link.
+       - Look for intermediate "Bridge Tables" (e.g., `map_patient_program`).
+    
+    3. **Verify Values:** - If the user asks for "Homelessness", use `sql_db_query_distinct_values` to see if the database calls it "Homeless", "Housing_Instability", or something else.
+    
+    ### CRITICAL SQL RULES:
+    1. **BINARY(16) / UUIDs:** - This database uses binary UUIDs. You CANNOT read them directly.
+       - **ALWAYS** wrap binary columns in `HEX()` when selecting them.
+       - Example: `SELECT HEX(patient_id) as patient_id, ...`
+       - When filtering: `WHERE patient_id = UNHEX('user_provided_string')`
+       
+    2. **Column Semantics (The "48" Rule):**
+       - If a column name implies a duration (e.g., `months`, `days`, `range`), it is NOT a count of items.
+       - If the user asks "How many patients?", use `COUNT(DISTINCT patient_id)`, do not select a column named `num_patients` unless you verify it first.
+    
+    3. **Text Search:**
+       - Always prefer `LIKE '%term%'` over `=` for text descriptions, as capitalization and spacing vary.
+    
+    4. **LIMIT:** - Always add `LIMIT 10` to your queries unless the user specifically asks for "all" (and even then, handle with care).
+
+    ### OUTPUT INSTRUCTIONS:
+    - If you are unsure about the schema, use `sql_db_get_foreign_keys` or `sql_db_sample_rows` first.
+    - If you are ready, output the SQL using `sql_db_query`.
+    - **NEVER** output raw text. Always use a tool.
+    """
 
 def query_verification_prompt_module(db):
-    check_query_system_prompt = """
-    You are a SQL expert with a strong attention to detail.
-    Double check the {dialect} query for common mistakes, including:
-    - Using NOT IN with NULL values
-    - Using UNION when UNION ALL should have been used
-    - Using BETWEEN for exclusive ranges
-    - Data type mismatch in predicates
-    - Properly quoting identifiers
-    - Using the correct number of arguments for functions
-    - Casting to the correct data type
-    - Using the proper columns for joins
-
-    If there are any of the above mistakes, rewrite the query. If there are no mistakes,
-    just reproduce the original query.
-
-    You will call the appropriate tool to execute the query after running this check.
-    """.format(dialect=db.dialect)
-    return check_query_system_prompt
+    return f"""
+    You are a Code Reviewer. Check the generated SQL for specific logical errors.
+    
+    Dialect: {db.dialect}
+    
+    CHECKLIST:
+    1. **The Binary Check:** - Did the agent select a `BINARY(16)` column (like `patient_id`, `uuid`, `guid`) *without* wrapping it in `HEX()`? 
+       - If yes, REWRITE the query to use `HEX(column)`. This is the #1 cause of errors.
+    
+    2. **The Join Check:**
+       - Are the joins logical? (e.g., Joining `patient` to `cohort` directly without a bridge table if one is required).
+    
+    3. **The Syntax Check:**
+       - Correct quoting, correct `LIKE` syntax, correct usage of `NOW()` vs `CURRENT_DATE()`.
+    
+    If mistakes are found, rewrite the query. If correct, reproduce it.
+    """
 
 def answer_validation_prompt_module():
     return """
-    You are a Data Analyst QA. You are reviewing a SQL query and its result.
+    You are a Quality Assurance Engineer. Validate the relationship between the User's Question and the SQL Result.
     
     User Question: {question}
     Generated SQL: {query}
     SQL Execution Result: {result}
     
-    Analyze the result:
-    1. If the result is an Error Message, you MUST respond with 'RETRY'.
-    2. If the result is Empty [], ask yourself: Is it likely that data exists but the query was too specific? 
-       (e.g., using '=' instead of 'LIKE', wrong casing, or guessing a categorical value). 
-       If yes, respond 'RETRY' and suggest checking distinct values or sample rows.
-    3. If the result looks correct and answers the question, respond 'VALID'.
+    ### VALIDATION LOGIC:
     
-    Provide your response in this format:
+    1. **Binary Garbage Detection:**
+       - Look at the `result`. Does it contain python byte strings like `b'\\x00...'` or `\\x89P4...'`?
+       - If YES: Respond **STATUS: RETRY**. 
+       - Feedback: "The query returned raw Binary data. You must rewrite the query to select `HEX(column_name)` instead of the raw column."
+    
+    2. **Semantic Mismatch (The "Count vs Value" Check):**
+       - Did the user ask for "How many" (Count) but the result is a specific number from a column (like `48` from `months`)?
+       - Did the user ask for a "List" but got a single row of numbers?
+       - If YES: Respond **STATUS: RETRY**.
+       - Feedback: "The result data type doesn't match the question. Check `sql_db_get_column_info` to ensure you aren't querying a duration/metadata column instead of a count."
+       
+    3. **Empty Results:**
+       - If the result is `[]` or `None`, but the question implies data should exist (e.g. "List active patients"):
+       - Respond **STATUS: RETRY**.
+       - Feedback: "No data found. Try checking `sql_db_query_distinct_values` or using `LIKE` with wildcards."
+    
+    4. **Success:**
+       - If the data looks readable and answers the prompt, respond **STATUS: VALID**.
+    
+    Response format:
     STATUS: [VALID | RETRY]
     FEEDBACK: [Your explanation here]
     """

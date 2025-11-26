@@ -1,46 +1,116 @@
 from langchain_core.tools import tool
 from langchain_community.utilities import SQLDatabase
+from backend.src.rag_manager import SchemaRAG
+from typing import List, Optional
 
-def get_db_tools(db: SQLDatabase):
+def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG) -> List:
     """
     Returns a list of custom tools bound to the specific database instance.
+    Includes tools for schema inspection, data sampling, and relationship discovery.
     """
 
     @tool
     def sql_db_query_distinct_values(table_name: str, column_name: str) -> str:
         """
-        Use this tool to get the top 10 distinct values for a specific column in a table.
-        Useful for understanding categorical data or exact string spellings (e.g. 'Status' vs 'status').
+        Use this to find valid values for a categorical column (e.g., status, types, categories).
+        
+        - Helps you avoid hallucinating values (e.g., guessing 'Females' when DB has 'F').
+        - Returns the first 15 values.
+        - If the value you need isn't there, try using LIKE '%partial%' in your actual query.
         """
         try:
-            return db.run(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 10")
+            # Safety check to prevent selecting * or massive columns
+            if "*" in column_name:
+                return "Error: You must specify a specific column name, not *"
+                
+            result = db.run(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 15")
+            
+            if not result:
+                return "No values found. Check table/column names."
+                
+            if result.count('\n') >= 14:
+                result += "\n\n(WARNING: Truncated to first 15 values. Use LIKE '%keyword%' in your final query if looking for specific values.)"
+            return result
         except Exception as e:
             return f"Error: {e}"
 
     @tool
-    def sql_db_sample_rows(table_name: str) -> str:
+    def sql_db_sample_rows(table_name: str, columns: Optional[str] = "*") -> str:
         """
-        Use this tool to get 3 sample rows from a table.
-        Useful for understanding date formats, name formats, and data context.
+        Get 3 sample rows from a table.
+        
+        - BEST for understanding data formatting (e.g., "Is the date '2023-01-01' or '01-Jan-23'?").
+        - BEST for checking if a column contains Binary/UUID data (gobbledygook).
+        - You can specify columns (e.g., "id, name, created_at") or leave default "*" for all.
         """
         try:
-            return db.run(f"SELECT * FROM {table_name} LIMIT 3")
+            return db.run(f"SELECT {columns} FROM {table_name} LIMIT 3")
         except Exception as e:
             return f"Error: {e}"
-    
+
     @tool
-    def sql_db_find_table_by_column_name(keyword: str) -> str:
+    def sql_db_find_relevant_tables(natural_language_query: str) -> str:
         """
-        Search for tables that contain a specific column name keyword.
-        Useful when you know the concept (e.g. 'label', 'score', 'risk') but not the table.
+        Search for relevant tables using Semantic Search (RAG).
+        Input should be the concept you are looking for (e.g. "patients in kodiak cohort" or "billing codes").
+        Returns table schemas that match the concept.
+        """
+        return schema_rag.search_tables(natural_language_query, k=4)
+
+    @tool
+    def sql_db_get_foreign_keys(table_name: str) -> str:
+        """
+        CRITICAL for Joins: Finds how a specific table links to others.
+        
+        Use this when:
+        1. You don't know how to join Table A to Table B.
+        2. You suspect there is a "Bridge Table" (like map_patient_program) but don't know its name.
+        
+        Returns a list of Foreign Keys and the tables they point to.
         """
         query = f"""
-        SELECT TABLE_NAME, COLUMN_NAME 
-        FROM information_schema.COLUMNS 
+        SELECT 
+            TABLE_NAME, 
+            COLUMN_NAME, 
+            REFERENCED_TABLE_NAME, 
+            REFERENCED_COLUMN_NAME 
+        FROM information_schema.KEY_COLUMN_USAGE 
         WHERE TABLE_SCHEMA = DATABASE() 
-        AND COLUMN_NAME LIKE '%{keyword}%';
+        AND (TABLE_NAME = '{table_name}' OR REFERENCED_TABLE_NAME = '{table_name}')
+        AND REFERENCED_TABLE_NAME IS NOT NULL;
         """
-        return db.run(query)
+        try:
+            result = db.run(query)
+            if not result:
+                return f"No explicit foreign keys found for {table_name}. You may need to join by matching column names (e.g. patient_id) manually."
+            return f"Foreign Key Relationships for {table_name}:\n{result}"
+        except Exception as e:
+            return f"Error retrieving foreign keys: {e}"
 
-    return [sql_db_query_distinct_values, sql_db_sample_rows, sql_db_find_table_by_column_name]
+    @tool
+    def sql_db_get_column_info(table_name: str) -> str:
+        """
+        Get technical details about columns (Data Types, Comments).
+        
+        Use this to 'Reason' about data:
+        - "Is 'patient_count' an Integer or a String?"
+        - "Is 'id' a BINARY(16) that needs HEX() conversion?"
+        - "Does 'service_months' mean duration or a calendar date?"
+        """
+        query = f"""
+        SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, COLUMN_COMMENT 
+        FROM information_schema.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table_name}';
+        """
+        try:
+            return db.run(query)
+        except Exception as e:
+            return f"Error fetching column info: {e}"
 
+    return [
+        sql_db_query_distinct_values, 
+        sql_db_sample_rows, 
+        sql_db_find_relevant_tables, 
+        sql_db_get_foreign_keys,
+        sql_db_get_column_info
+    ]
