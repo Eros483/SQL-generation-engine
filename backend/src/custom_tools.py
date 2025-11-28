@@ -1,12 +1,13 @@
 from langchain_core.tools import tool
 from langchain_community.utilities import SQLDatabase
 from backend.src.rag_manager import SchemaRAG
+from backend.src.graph_manager import SchemaGraph
 from typing import List, Optional
 
-def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG) -> List:
+def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGraph) -> List:
     """
     Returns a list of custom tools bound to the specific database instance.
-    Includes tools for schema inspection, data sampling, and relationship discovery.
+    Includes tools for schema inspection, data sampling, relationship discovery, and pathfinding.
     """
 
     @tool
@@ -51,22 +52,33 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG) -> List:
     @tool
     def sql_db_find_relevant_tables(natural_language_query: str) -> str:
         """
-        Search for relevant tables using Semantic Search (RAG).
+        Step 1: Search for relevant tables using Semantic Search (RAG).
         Input should be the concept you are looking for (e.g. "patients in kodiak cohort" or "billing codes").
         Returns table schemas that match the concept.
         """
         return schema_rag.search_tables(natural_language_query, k=4)
 
     @tool
-    def sql_db_get_foreign_keys(table_name: str) -> str:
+    def sql_db_find_table_connections(table_names_comma_separated: str) -> str:
         """
-        CRITICAL for Joins: Finds how a specific table links to others.
+        Step 2: Calculates the SQL JOIN path to connect multiple tables.
         
         Use this when:
-        1. You don't know how to join Table A to Table B.
-        2. You suspect there is a "Bridge Table" (like map_patient_program) but don't know its name.
+        1. You have identified 2 or more tables (e.g. 'patient' and 'lob') but don't know the path.
+        2. You need to know if a Bridge Table (like 'map_patient_metrics') is required.
         
-        Returns a list of Foreign Keys and the tables they point to.
+        Input: A comma-separated list of tables (e.g., "patient, lob").
+        Output: The specific SQL 'FROM... JOIN...' clause connecting them.
+        """
+        # Clean input string into list
+        tables = [t.strip() for t in table_names_comma_separated.split(',')]
+        return schema_graph.find_connection_query(tables)
+
+    @tool
+    def sql_db_get_foreign_keys(table_name: str) -> str:
+        """
+        Finds how a specific table links to others via explicit Foreign Keys.
+        Useful for inspecting direct relationships if the Connection Finder fails.
         """
         query = f"""
         SELECT 
@@ -91,11 +103,7 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG) -> List:
     def sql_db_get_column_info(table_name: str) -> str:
         """
         Get technical details about columns (Data Types, Comments).
-        
-        Use this to 'Reason' about data:
-        - "Is 'patient_count' an Integer or a String?"
-        - "Is 'id' a BINARY(16) that needs HEX() conversion?"
-        - "Does 'service_months' mean duration or a calendar date?"
+        Use this to 'Reason' about data types (Integer vs String, Binary vs Text).
         """
         query = f"""
         SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, COLUMN_COMMENT 
@@ -111,6 +119,7 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG) -> List:
         sql_db_query_distinct_values, 
         sql_db_sample_rows, 
         sql_db_find_relevant_tables, 
+        sql_db_find_table_connections,
         sql_db_get_foreign_keys,
         sql_db_get_column_info
     ]

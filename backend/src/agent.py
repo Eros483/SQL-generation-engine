@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # Import new modules
 from backend.src.rag_manager import SchemaRAG
+from backend.src.graph_manager import SchemaGraph
 from backend.src.custom_tools import get_db_tools
 from backend.src.prompt_module import (
     select_table_prompt_module, 
@@ -37,19 +38,20 @@ class SQLAgentGenerator:
         self.llm = self._setup_llm()
         self.db = self._setup_database()
         
-        # 1. Initialize RAG Manager
+        # 1. Initialize Managers
         self.rag = SchemaRAG(self.db) 
+        self.graph_manager = SchemaGraph(self.db)
 
-        # 2. Pass RAG to tools setup (This now includes the new Reasoning Tools)
+        # 2. Setup Tools
         self.tools = self._setup_tools() 
         self.tool_map = {tool.name: tool for tool in self.tools}
         
-        # 3. Initialize Memory Persistence
+        # 3. Persistence
         self.checkpointer = MemorySaver()
         
         self.graph = self._build_graph()
         
-        logger.info("SQL Agent Initialized with Reasoning Graph")
+        logger.info("SQL Agent Initialized with Reasoning Graph & Pathfinder")
 
     def _setup_llm(self):
         return init_chat_model(self.model_name)
@@ -68,10 +70,8 @@ class SQLAgentGenerator:
     def _setup_tools(self) -> List:
         toolkit = SQLDatabaseToolkit(db=self.db, llm=self.llm)
         standard_tools = toolkit.get_tools()
-        
-        # This now returns the list including `sql_db_get_foreign_keys` etc.
-        custom_tools = get_db_tools(self.db, self.rag) 
-        
+        # Pass graph_manager to custom tools
+        custom_tools = get_db_tools(self.db, self.rag, self.graph_manager) 
         return standard_tools + custom_tools
 
     # --- Nodes ---
@@ -87,7 +87,6 @@ class SQLAgentGenerator:
         Uses RAG to find relevant tables conceptually.
         """
         system_prompt = select_table_prompt_module()
-        
         system_message = {"role": "system", "content": system_prompt}
         
         # Give access to RAG search and standard schema lookup
@@ -95,42 +94,39 @@ class SQLAgentGenerator:
         llm_with_tools = self.llm.bind_tools(tools, tool_choice="any")
         
         response = llm_with_tools.invoke([system_message] + state["messages"])
-        
         return {"messages": [response]}
 
     def generate_query_node(self, state: MessagesState):
         """
-        Generates the SQL query. Now binds all Reasoning Tools.
+        Generates the SQL query. Now binds all Reasoning Tools including Pathfinder.
         """
         base_prompt = generate_query_prompt_module(self.db)
         
-        # Count query attempts
-        query_attempts = sum(1 for msg in state["messages"] 
-                            if isinstance(msg, AIMessage) and any(
-                                tc.get("name") == "sql_db_query" 
-                                for tc in (msg.tool_calls or [])
-                            ))
+        # Stronger System Prompt to force execution
+        instruction = """
+        \n\n### EXECUTION PLAN
+        1. **RESEARCH PHASE:** If you don't know table names, use `sql_db_find_relevant_tables`.
+        2. **CONNECTION PHASE:** If you don't know how to join tables, use `sql_db_find_table_connections`.
+        3. **EXECUTION PHASE (CRITICAL):** Once you have the table names and join logic, you **MUST** run `sql_db_query`.
+           - **DO NOT STOP** after finding the schema or join path.
+           - You have not answered the user until you have run a SELECT query and received actual data rows.
         
-        # If we are in a retry loop (attempts > 0), add extra pressure
-        retry_instruction = ""
-        if query_attempts > 0:
-            retry_instruction = f"""
-            \n\n⚠️ REASONING REQUIRED (Attempt {query_attempts + 1}):
-            - If previous attempt failed due to Binary/UUID issues, use `HEX(column)` wrapper.
-            - If previous attempt failed due to empty results, check `sql_db_query_distinct_values` or `sql_db_sample_rows` first.
-            - If joining failed, use `sql_db_get_foreign_keys` to find the correct path.
-            """
+        ### DATA RULES
+        - Use `LIMIT 10` for all queries.
+        - For Binary IDs (like patient_id), use `BIN_TO_UUID(col)` or `HEX(col)`.
+        """
 
-        system_message = {"role": "system", "content": base_prompt + retry_instruction}
+        system_message = {"role": "system", "content": base_prompt + instruction}
         
-        # Bind ALL tools (Standard + New Reasoning Tools)
+        # Bind ALL tools
         tools_to_bind = [
             self.tool_map["sql_db_query"], 
             self.tool_map["sql_db_query_distinct_values"], 
             self.tool_map["sql_db_sample_rows"],
             self.tool_map["sql_db_find_relevant_tables"],
-            self.tool_map["sql_db_get_foreign_keys"], # NEW: Join Solver
-            self.tool_map["sql_db_get_column_info"]   # NEW: Semantics Solver
+            self.tool_map["sql_db_find_table_connections"], # The Engineer Tool
+            self.tool_map["sql_db_get_foreign_keys"],
+            self.tool_map["sql_db_get_column_info"]
         ]
         
         llm_with_tools = self.llm.bind_tools(tools_to_bind, tool_choice="any")
@@ -167,20 +163,18 @@ class SQLAgentGenerator:
         REASONING_TOOLS = [
             "sql_db_query_distinct_values", "sql_db_sample_rows", 
             "sql_db_find_relevant_tables", "sql_db_schema", 
-            "sql_db_get_foreign_keys", "sql_db_get_column_info"
+            "sql_db_get_foreign_keys", "sql_db_get_column_info",
+            "sql_db_find_table_connections" 
         ]
         if tool_name in REASONING_TOOLS:
             logger.info(f"Reasoning Tool ({tool_name}) detected. Skipping verification.")
             return {"messages": []}
 
-        # 3. Verify sql_db_query for LIMIT and Syntax
+        # 3. Verify sql_db_query for LIMIT
         if tool_name == "sql_db_query":
             proposed_query = tool_call["args"].get("query", "")
-            
-            # Simple syntax patches
             if "LIMIT" not in proposed_query.upper():
                 proposed_query += " LIMIT 10"
-                
                 return {"messages": [AIMessage(content="", tool_calls=[{
                     "id": tool_call["id"],
                     "name": "sql_db_query",
@@ -192,39 +186,49 @@ class SQLAgentGenerator:
 
     def validate_answer_node(self, state: MessagesState):
         """
-        Enhanced Validation: Includes 'Binary Sniffer' and Semantic Checks.
+        Enhanced Validation: Forces retry if only Helper Tools were used.
         """
         last_message = state["messages"][-1]
         
-        # Only validate actual sql_db_query results
+        # --- FIX: Check for Helper Tools and FORCE Retry ---
+        # If the last thing we did was just "look up tables" or "find connections",
+        # we are NOT done. We must force the agent back to generate the actual SQL.
+        if isinstance(last_message, ToolMessage):
+             # Find the corresponding tool call in the previous AIMessage
+             if len(state["messages"]) >= 2:
+                 last_ai_msg = state["messages"][-2]
+                 if last_ai_msg.tool_calls:
+                     tool_name = last_ai_msg.tool_calls[0]["name"]
+                     HELPER_TOOLS = [
+                        "sql_db_find_relevant_tables", 
+                        "sql_db_find_table_connections", 
+                        "sql_db_schema", 
+                        "sql_db_get_foreign_keys",
+                        "sql_db_get_column_info"
+                     ]
+                     
+                     if tool_name in HELPER_TOOLS:
+                         logger.info(f"Helper Tool ({tool_name}) finished. Forcing Agent to EXECUTE SQL.")
+                         return {"messages": [HumanMessage(content=f"SYSTEM FEEDBACK: Research tool '{tool_name}' complete. You have the schema info. NOW you must write and execute the 'sql_db_query' to get the actual data rows.")]}
+
+        # Only validate actual sql_db_query results from here
         if not isinstance(last_message, ToolMessage) or last_message.name != "sql_db_query":
             return {"messages": []}
             
         sql_result = last_message.content
         
         # --- AUTONOMOUS GUARDRAIL: Binary Data Detection ---
-        # Detects python byte strings like "b'\x00...'" or "(b'..."
-        # This catches unreadable UUIDs immediately without wasting an LLM call.
         if "b'\\" in sql_result or "bytearray" in str(sql_result).lower():
             logger.warning("Binary data detected in output. Triggering immediate retry.")
-            feedback_msg = HumanMessage(
-                content=(
-                    "SYSTEM FEEDBACK: The query returned unreadable BINARY/BYTES data (e.g., b'\\x00...'). "
-                    "I cannot read this. "
-                    "RETRY the query, but you MUST use `HEX(column_name)` for the binary columns "
-                    "to convert them into readable strings."
-                )
-            )
-            return {"messages": [feedback_msg]}
+            return {"messages": [HumanMessage(content="SYSTEM FEEDBACK: Binary data detected (b'\\x00...'). Retry using HEX(column) or BIN_TO_UUID(column).")]}
 
-        # --- LLM Validation (Semantic Check) ---
+        # --- LLM Validation ---
         user_question = "Unknown"
         for msg in reversed(state["messages"]):
-            if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM FEEDBACK"):
+            if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM"):
                 user_question = msg.content
                 break
 
-        # Find the query used
         generated_query = "Unknown"
         for msg in reversed(state["messages"]):
             if isinstance(msg, AIMessage) and msg.tool_calls:
@@ -242,15 +246,11 @@ class SQLAgentGenerator:
         
         if "STATUS: RETRY" in validation_response.content:
             logger.info("Validator Triggered Retry")
-            
-            # Check retry limits (prevent infinite loops)
-            retry_count = sum(1 for msg in state["messages"] 
-                            if isinstance(msg, HumanMessage) and "FEEDBACK" in msg.content)
+            retry_count = sum(1 for msg in state["messages"] if isinstance(msg, HumanMessage) and "FEEDBACK" in msg.content)
             
             if retry_count >= 3:
                 return {"messages": [AIMessage(content="Maximum retries reached. I will try to answer with the data I have.")]}
             
-            # Extract feedback
             feedback_text = validation_response.content.split("FEEDBACK:")[-1].strip()
             return {"messages": [HumanMessage(content=f"Validator Feedback: {feedback_text}")]}
             
@@ -262,7 +262,7 @@ class SQLAgentGenerator:
         """
         user_question = "Unknown"
         for msg in reversed(state["messages"]):
-            if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM FEEDBACK"):
+            if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM"):
                 user_question = msg.content
                 break
         
@@ -279,7 +279,6 @@ class SQLAgentGenerator:
         Provide a concise, natural language answer.
         - If the result is a list, summarize it.
         - If the result is empty, explain that no matching records were found.
-        - Do not mention technical details like table names or SQL syntax.
         """
         final_response = self.llm.invoke(prompt)
         return {"messages": [final_response]}
@@ -295,7 +294,7 @@ class SQLAgentGenerator:
     def should_retry(self, state: MessagesState) -> str:
         last_message = state["messages"][-1]
         
-        # If validator injected feedback (HumanMessage), retry
+        # If Validator/System injected a HumanMessage forcing retry, go back to generate
         if isinstance(last_message, HumanMessage) and ("FEEDBACK" in last_message.content or "Validator" in last_message.content):
             return "generate_query"
         
