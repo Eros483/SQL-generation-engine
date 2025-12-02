@@ -1,11 +1,10 @@
-const API_URL = "http://localhost:8000"; // Or whatever your URL is
+const API_URL = "http://localhost:8000";
 
 export const checkHealth = async () => {
   const response = await fetch(`${API_URL}/health`);
   return response.json();
 };
 
-// UPDATE THIS FUNCTION
 export const sendMessage = async (query, sessionId) => {
   const response = await fetch(`${API_URL}/chat`, {
     method: 'POST',
@@ -14,7 +13,7 @@ export const sendMessage = async (query, sessionId) => {
     },
     body: JSON.stringify({ 
       query: query,
-      session_id: sessionId // <--- Add this field
+      session_id: sessionId
     }),
   });
 
