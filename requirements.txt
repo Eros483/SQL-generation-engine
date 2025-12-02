@@ -10,3 +10,7 @@ fastapi
 faiss-cpu
 langchain-google-genai
 networkx
+langchain-core
+uvicorn
+boto3
+python-dotenv
