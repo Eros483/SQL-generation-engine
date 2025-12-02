@@ -10,10 +10,7 @@ from backend.schemas.chat import ChatRequest, ChatResponse
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Global variable to store the agent instance
 agent_instance: SQLAgentGenerator = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,8 +32,6 @@ async def lifespan(app: FastAPI):
         raise e
     
     yield
-    # Cleanup logic (if any) would go here after yield
-
 
 app = FastAPI(
     title="Caliper NLP-to-SQL API",
@@ -44,7 +39,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -52,9 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# --- Routes ---
 
 @app.get("/health")
 async def health_check():
