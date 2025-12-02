@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-// Update the import to pass session ID later
 import { sendMessage, checkHealth } from '../services/api';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
@@ -9,13 +8,11 @@ function ChatInterface() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('checking');
-  // 1. ADD STATE FOR SESSION ID
   const [sessionId, setSessionId] = useState('');
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     checkBackendHealth();
-    // 2. INITIALIZE SESSION ID
     let storedSessionId = localStorage.getItem("chat_session_id");
     if (!storedSessionId) {
       storedSessionId = crypto.randomUUID();
@@ -55,7 +52,6 @@ function ChatInterface() {
     setIsLoading(true);
 
     try {
-      // 3. PASS SESSION ID TO THE API FUNCTION
       const response = await sendMessage(text, sessionId);
 
       const aiMessage = {
@@ -82,8 +78,6 @@ function ChatInterface() {
 
   const handleClearChat = () => {
     setMessages([]);
-    // 4. OPTIONAL: RESET SESSION ON CLEAR
-    // This effectively "wipes" the agent's memory for a fresh start
     const newSessionId = crypto.randomUUID();
     setSessionId(newSessionId);
     localStorage.setItem("chat_session_id", newSessionId);
@@ -91,59 +85,93 @@ function ChatInterface() {
 
   return (
     <div className="chat-interface">
-      <div className="chat-header">
-        <div className="header-content">
-          <h1>Caliper SQL Assistant</h1>
-          <p className="subtitle">Ask questions about your database in natural language</p>
-        </div>
-        <div className="header-actions">
-          <div className={`status-indicator ${connectionStatus}`}>
-            <span className="status-dot"></span>
-            {connectionStatus === 'connected' && 'Connected'}
-            {connectionStatus === 'error' && 'Disconnected'}
-            {connectionStatus === 'checking' && 'Checking...'}
+      <header className="navbar">
+        <div className="navbar-container">
+          <div className="navbar-logo">
+            <img src="/foresighthealth_logo.jpeg" alt="Foresight Health Logo" className="logo-icon" />
+            <span className="logo-text">Caliper</span>
           </div>
-          {messages.length > 0 && (
-            <button onClick={handleClearChat} className="clear-button">
-              Clear Chat
+
+          <nav className="navbar-links">
+            <a href="#modules" className="nav-link">Modules</a>
+            <a href="#clients" className="nav-link">Clients</a>
+            <a href="#about" className="nav-link">About</a>
+            <a href="#resources" className="nav-link">Resources</a>
+          </nav>
+
+          <div className="navbar-cta">
+            <button className="cta-button">
+              <span>Book a demo</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <path d="M16 2v4M8 2v4M3 10h18"/>
+              </svg>
             </button>
-          )}
+          </div>
         </div>
-      </div>
+      </header>
 
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-icon">💬</div>
-            <h2>Start a Conversation</h2>
-            <p>Ask me anything about your database</p>
-            <div className="example-queries">
-              <p className="examples-title">Try asking:</p>
-              <div className="example-item">"Show me all patients"</div>
-              <div className="example-item">"How many housing assistance interventions were provided?"</div>
-              <div className="example-item">"List patients who haven't received any interventions"</div>
+            <div className="empty-container">
+              <div className="empty-icon">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+              <h2>AI-Powered Database Insights</h2>
+              <p className="empty-subtitle">Ask natural language questions about your healthcare data</p>
+
+              <div className="example-queries">
+                <p className="examples-title">Example queries:</p>
+                <div className="example-grid">
+                  <div className="example-item">"Show all patients with housing assistance"</div>
+                  <div className="example-item">"How many interventions were provided last month?"</div>
+                  <div className="example-item">"List high-risk patients needing follow-up"</div>
+                </div>
+              </div>
             </div>
           </div>
         ) : (
           <>
-            {messages.map((message) => (
-              <ChatMessage key={message.id} message={message} />
-            ))}
-            {isLoading && (
-              <div className="loading-message">
-                <div className="loading-dots">
-                  <span></span>
-                  <span></span>
-                  <span></span>
+            <div className="messages-container">
+              {messages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
+              ))}
+              {isLoading && (
+                <div className="loading-message">
+                  <div className="loading-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
                 </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
+              )}
+              <div ref={messagesEndRef} />
+            </div>
           </>
         )}
       </div>
 
-      <ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />
+      <footer className="chat-footer">
+        <div className="footer-status">
+          <div className={`status-badge ${connectionStatus}`}>
+            <span className="status-dot"></span>
+            <span className="status-text">
+              {connectionStatus === 'connected' && 'Connected'}
+              {connectionStatus === 'error' && 'Disconnected'}
+              {connectionStatus === 'checking' && 'Checking...'}
+            </span>
+          </div>
+          {messages.length > 0 && (
+            <button onClick={handleClearChat} className="footer-action">
+              Clear conversation
+            </button>
+          )}
+        </div>
+        <ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />
+      </footer>
     </div>
   );
 }
