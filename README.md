@@ -1,4 +1,4 @@
-# Agentic SQL generator for Caliper
+# Agentic SQL generator
 Designed as a Natural Language to SQL engine, to query complex healthcare datasets autonomously. Utilises a multi-agentic workflow, powered by AWS Bedrock (Google Gemini as a fallback client) and LangGraph to reason through database schemas and complex query generation.
 
 Features a Schema Knowledge Graph for finding join paths between distant tables, and RAG system to map user jargon to technical table names.
