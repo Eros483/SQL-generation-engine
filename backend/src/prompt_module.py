@@ -1,8 +1,12 @@
-# backend/src/prompt_module.py
+# ----- Prompt Templates for SQL Agent @ backend/src/prompt_module.py ------
 
-def select_table_prompt_module():
+def select_table_prompt_module() -> str:
     """
+    Generates the system prompt for the table selection/discovery phase.
     Focuses on 'Discovery' rather than 'Hardcoded Knowledge'.
+
+    Returns:
+        str: The system prompt for identifying relevant tables.
     """
     return """
     You are a database architect. Your job is to select the tables required to answer the user's question.
@@ -17,12 +21,20 @@ def select_table_prompt_module():
     Output your response as a JSON object with a "table_names" list.
     """
 
-def generate_query_prompt_module(db):
+
+def generate_query_prompt_module(db) -> str:
     """
-    Focuses on 'Reasoning', 'Tool Usage', and 'Data Safety'.
+    Generates the system prompt for the SQL generation phase.
+    Focuses on 'Reasoning', 'Tool Usage', and 'Data Safety' (especially regarding binary UUIDs).
+
+    Args:
+        db: The LangChain SQLDatabase object (used to determine dialect).
+
+    Returns:
+        str: The system prompt for writing the SQL query.
     """
     dialect = db.dialect
-    
+
     return f"""
     You are a generic SQL Expert Agent. You are capable of reasoning through complex schemas using tools.
     
@@ -59,7 +71,18 @@ def generate_query_prompt_module(db):
     - **NEVER** output raw text. Always use a tool.
     """
 
-def query_verification_prompt_module(db):
+
+def query_verification_prompt_module(db) -> str:
+    """
+    Generates the system prompt for the query verification phase (Code Reviewer).
+    Ensures syntax correctness and proper binary column handling before execution.
+
+    Args:
+        db: The LangChain SQLDatabase object.
+
+    Returns:
+        str: The system prompt for correcting SQL errors.
+    """
     return f"""
     You are a Code Reviewer. Check the generated SQL for specific logical errors.
     
@@ -78,7 +101,15 @@ def query_verification_prompt_module(db):
     If mistakes are found, rewrite the query. If correct, reproduce it.
     """
 
-def answer_validation_prompt_module():
+
+def answer_validation_prompt_module() -> str:
+    """
+    Generates the system prompt for the final answer validation phase (QA Engineer).
+    Checks the result data for binary garbage, semantic mismatches, or empty results.
+
+    Returns:
+        str: The system prompt for validating the execution result.
+    """
     return """
     You are a Quality Assurance Engineer. Validate the relationship between the User's Question and the SQL Result.
     

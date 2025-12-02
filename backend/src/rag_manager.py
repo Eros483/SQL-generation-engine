@@ -1,18 +1,36 @@
+# ----- Schema RAG Manager @ backend/src/rag_manager.py ------
+
+import os
 from langchain_community.utilities import SQLDatabase
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from backend.utils.logger import get_logger
 from backend.core.config import settings
-import os
 
 logger = get_logger(__name__)
 
+
 class SchemaRAG:
+    """
+    Manages semantic search over the database schema.
+    
+    This class indexes table schemas and manual 'business dictionary' descriptions 
+    into a vector store (FAISS). It allows the agent to find relevant tables 
+    based on natural language queries, bridging the gap between user terminology 
+    and technical table names.
+    """
+
     def __init__(self, db: SQLDatabase):
+        """
+        Initialize the SchemaRAG manager.
+
+        Args:
+            db (SQLDatabase): The database instance to inspect.
+        """
         self.db = db
         self.embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004", 
+            model="models/text-embedding-004",
             google_api_key=settings.GEMINI_API_KEY
         )
         self.vector_store = None
@@ -20,8 +38,15 @@ class SchemaRAG:
 
     def _get_table_info(self):
         """
-        Scans the DB and creates a semantic string for each table.
-        Injects MANUAL CONTEXT for critical tables to help RAG finding.
+        Scans the database and constructs semantic documents for each table.
+        
+        This method combines the raw SQL schema (columns/types) with manually 
+        injected 'Business Context' strings. This context is critical for 
+        helping the LLM understand relationships (e.g., bridge tables) and 
+        jargon (e.g., 'LOB' = Insurance).
+
+        Returns:
+            list[Document]: A list of LangChain Document objects ready for indexing.
         """
         table_names = self.db.get_usable_table_names()
         documents = []
@@ -29,11 +54,8 @@ class SchemaRAG:
         logger.info(f"Indexing {len(table_names)} tables for RAG...")
 
         for table in table_names:
-            # 1. Get standard schema (columns/types)
             schema = self.db.get_table_info([table])
             
-            # 2. Inject "Business Dictionary" Context
-            # This bridges the gap between user jargon ("Medicaid") and table names ("lob")
             extra_context = ""
             
             if table == "patient":
@@ -51,7 +73,6 @@ class SchemaRAG:
             elif table == "intervention_service":
                 extra_context = "TRANSACTIONS. Records Interventions given to patients. Link to intervention_type via intrv_type."
             
-            # 3. Create the document content
             content = f"Table: {table}\nDescription: {extra_context}\nSchema:\n{schema}"
             
             documents.append(Document(
@@ -62,6 +83,9 @@ class SchemaRAG:
         return documents
 
     def _build_index(self):
+        """
+        Builds the FAISS vector index from the table documents.
+        """
         try:
             documents = self._get_table_info()
             if documents:
@@ -73,10 +97,19 @@ class SchemaRAG:
             logger.error(f"Failed to build RAG index: {e}")
 
     def search_tables(self, query: str, k: int = 5) -> str:
+        """
+        Performs a semantic similarity search to find relevant tables.
+
+        Args:
+            query (str): The user's natural language question.
+            k (int): Number of table results to return (default 5 to capture bridge tables).
+
+        Returns:
+            str: A formatted string containing the schema and description of the top matching tables.
+        """
         if not self.vector_store:
             return "Error: Vector store not initialized."
 
-        # Search for more results (k=5) to ensure we capture the bridge tables
         results = self.vector_store.similarity_search(query, k=k)
         
         output = []

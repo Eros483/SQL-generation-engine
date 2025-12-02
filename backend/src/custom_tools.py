@@ -1,3 +1,4 @@
+# ------ Custom SQL Database Tools @ backend/src/custom_tools.py ------
 from langchain_core.tools import tool
 from langchain_community.utilities import SQLDatabase
 from backend.src.rag_manager import SchemaRAG
@@ -20,7 +21,6 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGra
         - If the value you need isn't there, try using LIKE '%partial%' in your actual query.
         """
         try:
-            # Safety check to prevent selecting * or massive columns
             if "*" in column_name:
                 return "Error: You must specify a specific column name, not *"
                 
@@ -70,7 +70,6 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGra
         Input: A comma-separated list of tables (e.g., "patient, lob").
         Output: The specific SQL 'FROM... JOIN...' clause connecting them.
         """
-        # Clean input string into list
         tables = [t.strip() for t in table_names_comma_separated.split(',')]
         return schema_graph.find_connection_query(tables)
 
