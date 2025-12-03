@@ -6,8 +6,8 @@
 }
 
 .navbar {
-  background-color: #ffffff;
-  border-bottom: 1px solid #e2e8f0;
+  background: linear-gradient(90deg, #ffffff 0%, #fffbfb 100%);
+  border-bottom: 1px solid #f0e8e8;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -57,14 +57,22 @@
   color: #64748b;
   text-decoration: none;
   font-weight: 500;
-  transition: color 0.2s ease;
+  transition: all 0.2s ease;
   border: none;
   background: none;
   cursor: pointer;
+  padding: 8px 16px;
+  border-radius: 20px;
 }
 
 .nav-link:hover {
   color: #0f172a;
+  background-color: #f5f8fc;
+}
+
+.nav-link b {
+  color: #2563eb;
+  font-weight: 700;
 }
 
 .navbar-cta {
@@ -109,7 +117,7 @@
   align-items: center;
   justify-content: center;
   padding: 40px;
-  background-color: #ffffff;
+  background: linear-gradient(135deg, #ffffff 0%, #fffbfb 100%);
 }
 
 .empty-container {
@@ -153,10 +161,10 @@
 
 .example-queries {
   width: 100%;
-  background-color: #f8fafc;
+  background: linear-gradient(135deg, #f8fafc 0%, #fdf9f9 100%);
   padding: 32px;
   border-radius: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #f0e8e8;
 }
 
 .examples-title {
@@ -176,13 +184,13 @@
 }
 
 .example-item {
-  background-color: #ffffff;
+  background: linear-gradient(90deg, #ffffff 0%, #fffbfb 100%);
   padding: 16px;
   border-radius: 8px;
   font-size: 14px;
   color: #0f172a;
   text-align: left;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #f0e8e8;
   border-left: 3px solid #2563eb;
   transition: all 0.2s ease;
   cursor: default;
@@ -190,8 +198,8 @@
 }
 
 .example-item:hover {
-  background-color: #f0f4f8;
-  border-color: #cbd5e1;
+  background: linear-gradient(90deg, #f5f8fc 0%, #fef5f5 100%);
+  border-color: #f0e8e8;
   transform: translateX(4px);
 }
 
@@ -202,7 +210,7 @@
   padding: 24px 32px;
   gap: 16px;
   overflow-y: auto;
-  background-color: #ffffff;
+  background: linear-gradient(135deg, #ffffff 0%, #fffbfb 100%);
 }
 
 .loading-message {
@@ -248,8 +256,8 @@
 }
 
 .chat-footer {
-  background-color: #ffffff;
-  border-top: 1px solid #e2e8f0;
+  background: linear-gradient(90deg, #ffffff 0%, #fffbfb 100%);
+  border-top: 1px solid #f0e8e8;
   padding: 16px 32px 24px;
 }
 
@@ -266,7 +274,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background-color: #f0f4f8;
+  background: linear-gradient(90deg, #f0f4f8 0%, #fdf9f9 100%);
   border-radius: 20px;
   font-size: 13px;
   font-weight: 500;
@@ -314,7 +322,7 @@
 }
 
 .footer-action:hover {
-  background-color: #f0f4f8;
+  background: linear-gradient(90deg, #f0f4f8 0%, #fdf9f9 100%);
   color: #0f172a;
 }
 

@@ -7,8 +7,8 @@
   display: flex;
   gap: 12px;
   align-items: flex-end;
-  background-color: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: linear-gradient(90deg, #f8fafc 0%, #fffbfb 100%);
+  border: 1px solid #f0e8e8;
   border-radius: 8px;
   padding: 12px;
   transition: all 0.2s ease;
@@ -16,7 +16,7 @@
 
 .input-container:focus-within {
   border-color: #2563eb;
-  background-color: #ffffff;
+  background: linear-gradient(90deg, #ffffff 0%, #fffbfb 100%);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
