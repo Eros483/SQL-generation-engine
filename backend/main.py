@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     """
     global agent_instance
     try:
-        logger.info("Initializing SQL Agent...")
+        # logger.info("Initializing SQL Agent...")
         # agent_instance = SQLAgentGenerator(google_provider=True, bedrock_provider=False)
         agent_instance=SQLAgentGenerator()
         logger.info("SQL Agent ready.")

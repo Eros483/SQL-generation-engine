@@ -12,26 +12,37 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGra
     """
 
     @tool
-    def sql_db_query_distinct_values(table_name: str, column_name: str) -> str:
+    def sql_db_query_distinct_values(table_name: str, column_name: str, search_keyword: Optional[str] = None) -> str:
         """
-        Use this to find valid values for a categorical column (e.g., status, types, categories).
+        Finds unique values in a column. 
+        CRITICAL: Use 'search_keyword' to filter results if you are looking for specific values.
         
-        - Helps you avoid hallucinating values (e.g., guessing 'Females' when DB has 'F').
-        - Returns the first 15 values.
-        - If the value you need isn't there, try using LIKE '%partial%' in your actual query.
+        Args:
+            table_name: The table to query.
+            column_name: The column to inspect.
+            search_keyword: (Optional) A string to filter by (e.g., "Home" will match "Homelessness").
         """
         try:
             if "*" in column_name:
                 return "Error: You must specify a specific column name, not *"
                 
-            result = db.run(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 15")
+            if search_keyword:
+                # added fuzzy search capability.
+                query = f"SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} LIKE :keyword LIMIT 15"
+                result = db.run(query, parameters={'keyword': f'%{search_keyword}%'})
+            else:
+                # Default behavior
+                result = db.run(f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT 15")
             
             if not result:
-                return "No values found. Check table/column names."
+                return f"No values found for column '{column_name}' in table '{table_name}' matching '{search_keyword or 'ALL'}'."
                 
-            if result.count('\n') >= 14:
-                result += "\n\n(WARNING: Truncated to first 15 values. Use LIKE '%keyword%' in your final query if looking for specific values.)"
-            return result
+            formatted_res = f"Distinct values in {table_name}.{column_name}"
+            if search_keyword:
+                formatted_res += f" (Filtered by '{search_keyword}')"
+            
+            return f"{formatted_res}:\n{result}"
+
         except Exception as e:
             return f"Error: {e}"
 
@@ -113,6 +124,45 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGra
             return db.run(query)
         except Exception as e:
             return f"Error fetching column info: {e}"
+    
+    @tool
+    def sql_db_find_value_location(search_term: str) -> str:
+        """
+        Global Search: Finds which Table and Column contains a specific string value.
+        """
+        all_tables = db.get_usable_table_names()
+        lookup_tables = [t for t in all_tables if t.endswith(('_type', 'lob', 'screening_type', 'org_attribute_types'))]
+        
+        found_locations = []
+        
+        for table in lookup_tables:
+            try:
+                # FIX: Use _execute with fetch="all" instead of db.run()
+                cols_query = f"""
+                    SELECT COLUMN_NAME 
+                    FROM information_schema.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = '{table}' 
+                    AND (DATA_TYPE LIKE '%char%' OR DATA_TYPE LIKE '%text%')
+                """
+                columns_res = db._execute(cols_query, fetch="all")
+                
+                for row in columns_res:
+                    col = row['COLUMN_NAME']
+                    
+                    # Check existence
+                    check_query = f"SELECT {col} FROM {table} WHERE {col} LIKE %s LIMIT 1"
+                    exists = db._execute(check_query, parameters=[f"%{search_term}%"], fetch="one")
+                    
+                    if exists and exists[col]:
+                        found_locations.append(f"Table: {table} | Column: {col} | Example: {exists[col]}")
+            except Exception as e:
+                continue
+                    
+        if not found_locations:
+            return f"Could not find value '{search_term}' in common lookup tables. Try searching in 'contributor_type' table manually."
+            
+        return "Value Found in:\n" + "\n".join(found_locations)
 
     return [
         sql_db_query_distinct_values, 
@@ -120,5 +170,6 @@ def get_db_tools(db: SQLDatabase, schema_rag: SchemaRAG, schema_graph: SchemaGra
         sql_db_find_relevant_tables, 
         sql_db_find_table_connections,
         sql_db_get_foreign_keys,
-        sql_db_get_column_info
+        sql_db_get_column_info,
+        sql_db_find_value_location
     ]

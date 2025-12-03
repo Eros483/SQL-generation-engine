@@ -46,21 +46,28 @@ class SchemaGraph:
             for row in results:
                 t1, c1 = row['TABLE_NAME'], row['COLUMN_NAME']
                 t2, c2 = row['REFERENCED_TABLE_NAME'], row['REFERENCED_COLUMN_NAME']
-                self.graph.add_edge(t1, t2, on=f"{t1}.{c1} = {t2}.{c2}")
-
+                
+                # DEFAULT WEIGHT = 1.0 (Strong)
+                weight = 1.0
+                
+                # PENALIZING WEAK JOINS (User/Audit logs)
+                if "user" in t1 or "user" in t2:
+                    weight = 10.0 
+                
+                self.graph.add_edge(t1, t2, on=f"{t1}.{c1} = {t2}.{c2}", weight=weight)
             manual_edges = [
-                ("patient", "map_patient_metrics", "patient.patient_id = map_patient_metrics.patient_id"),
-                ("map_patient_metrics", "lob", "map_patient_metrics.lob_id = lob.lob_id"),
-                ("patient", "patient_score", "patient.patient_id = patient_score.patient_id"),
-                ("patient", "contributor_individual", "patient.patient_id = contributor_individual.patient_id"),
-                ("contributor_individual", "contributor_type", "contributor_individual.contr_type = contributor_type.contr_type"),
-                ("intervention_service", "intervention_type", "intervention_service.intrv_type = intervention_type.intrv_type")
+                ("patient", "map_patient_metrics", "patient.patient_id = map_patient_metrics.patient_id", 1.0),
+                ("map_patient_metrics", "lob", "map_patient_metrics.lob_id = lob.lob_id", 1.0),
+                ("lob", "organization", "lob.org_guid = organization.org_guid", 1.0), 
+                ("patient", "patient_score", "patient.patient_id = patient_score.patient_id", 1.0),
+                ("patient", "contributor_individual", "patient.patient_id = contributor_individual.patient_id", 1.0),
+                ("contributor_individual", "contributor_type", "contributor_individual.contr_type = contributor_type.contr_type", 1.0),
+
+                ("patient", "user", "patient.patient_coordinator = user.user_id", 10.0)
             ]
 
-            for t1, t2, condition in manual_edges:
-                self.graph.add_edge(t1, t2, on=condition)
-
-            logger.info(f"Schema Graph built: {self.graph.number_of_nodes()} tables, {self.graph.number_of_edges()} links.")
+            for t1, t2, condition, w in manual_edges:
+                self.graph.add_edge(t1, t2, on=condition, weight=w)
 
         except Exception as e:
             logger.error(f"Graph build failed: {e}")
@@ -88,22 +95,25 @@ class SchemaGraph:
 
         try:
             start = valid_tables[0]
-            targets = valid_tables[1:]
-
-            full_path_logic = []
-
-            for target in targets:
-                path = nx.shortest_path(self.graph, source=start, target=target)
+            # HEURISTIC: Always try to anchor on 'patient' if present, to ensure star-schema validity
+            if "patient" in valid_tables:
+                start = "patient"
+                
+            full_joins = set()
+            
+            for target in valid_tables:
+                if target == start: continue
+                
+                # USE WEIGHTS FOR SHORTEST PATH
+                path = nx.shortest_path(self.graph, source=start, target=target, weight='weight')
 
                 for i in range(len(path) - 1):
                     t_a = path[i]
                     t_b = path[i+1]
-                    condition = self.graph[t_a][t_b]['on']
-                    full_path_logic.append(f"JOIN {t_b} ON {condition}")
+                    edge = self.graph[t_a][t_b]
+                    full_joins.add(f"JOIN {t_b} ON {edge['on']}")
 
-            unique_joins = sorted(list(set(full_path_logic)))
-
-            return f"FROM {start}\n" + "\n".join(unique_joins)
+            return f"FROM {start}\n" + "\n".join(sorted(list(full_joins)))
 
         except nx.NetworkXNoPath:
             return "No path found. These tables appear to be disconnected."

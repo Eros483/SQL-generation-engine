@@ -42,7 +42,7 @@ class SQLAgentGenerator:
 
         region_name: str = "us-east-1",
         # Default to the most capable Claude 3.5 Sonnet v2
-        # model_name: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0" currently waiting for bedrock access
+        # model_name: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0" #currently waiting for bedrock access
         model_name: str = "us.amazon.nova-pro-v1:0"
     ):
         """
@@ -196,7 +196,8 @@ class SQLAgentGenerator:
             self.tool_map["sql_db_find_relevant_tables"],
             self.tool_map["sql_db_find_table_connections"],
             self.tool_map["sql_db_get_foreign_keys"],
-            self.tool_map["sql_db_get_column_info"]
+            self.tool_map["sql_db_get_column_info"],
+            self.tool_map["sql_db_find_value_location"]
         ]
         llm_with_tools = self.llm.bind_tools(tools_to_bind)
         response = llm_with_tools.invoke([system_message] + state["messages"])
@@ -261,41 +262,90 @@ class SQLAgentGenerator:
         Node: Validates the execution result.
         Forces a retry if only research tools were used but no SQL execution occurred.
         Also detects binary data in output and requests hex conversion.
-
-        Args:
-            state (MessagesState): The current graph state.
-
-        Returns:
-            dict: Feedback messages or validation results.
         """
         last_message = state["messages"][-1]
 
+        # NEW: Detect premature termination
+        if isinstance(last_message, AIMessage) and not last_message.tool_calls:
+            content_lower = last_message.content.lower()
+            
+            # Check if agent gave up without executing actual query
+            premature_exit_phrases = [
+                "no matching records",
+                "no data was found",
+                "no medicaid patients",
+                "no patients",
+                "could not find"
+            ]
+            
+            if any(phrase in content_lower for phrase in premature_exit_phrases):
+                # Extract user question
+                user_question = "Unknown"
+                for msg in reversed(state["messages"]):
+                    if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM"):
+                        user_question = msg.content
+                        break
+                
+                # Check if we only used helper tools (not sql_db_query)
+                recent_tool_calls = []
+                for msg in reversed(state["messages"][-10:]):  # Look at last 10 messages
+                    if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        recent_tool_calls.extend([tc["name"] for tc in msg.tool_calls])
+                
+                # If we never ran sql_db_query, force execution
+                if "sql_db_query" not in recent_tool_calls:
+                    logger.warning("⚠️ Agent terminated without executing sql_db_query. Forcing retry.")
+                    
+                    return {"messages": [HumanMessage(content=f"""SYSTEM FEEDBACK: You aborted without running a SELECT query.
+
+    You used helper tools ({', '.join(set(recent_tool_calls))}) but never executed the actual data retrieval.
+
+    MANDATORY NEXT STEP: Use sql_db_query to run the following query structure:
+
+    For '{user_question}', build a query that:
+    1. JOINs the necessary tables (patient, map_patient_metrics, lob, patient_score, etc.)
+    2. Filters WHERE conditions match the user's criteria
+    3. Orders and limits results appropriately
+    4. Uses HEX() or BIN_TO_UUID() for any BINARY columns
+
+    Execute the query NOW with sql_db_query.""")]}
+
+        # Continue with existing validation logic...
         if isinstance(last_message, ToolMessage):
-             if len(state["messages"]) >= 2:
-                 last_ai_msg = state["messages"][-2]
-                 if last_ai_msg.tool_calls:
-                     tool_name = last_ai_msg.tool_calls[0]["name"]
-                     HELPER_TOOLS = [
+            if len(state["messages"]) >= 2:
+                last_ai_msg = None
+                for msg in reversed(state["messages"][:-1]):
+                    if isinstance(msg, AIMessage):
+                        last_ai_msg = msg
+                        break
+                
+                if last_ai_msg and hasattr(last_ai_msg, 'tool_calls') and last_ai_msg.tool_calls:
+                    tool_name = last_ai_msg.tool_calls[0]["name"]
+                    HELPER_TOOLS = [
                         "sql_db_find_relevant_tables", 
                         "sql_db_find_table_connections", 
                         "sql_db_schema", 
                         "sql_db_get_foreign_keys",
-                        "sql_db_get_column_info"
-                     ]
-                     
-                     if tool_name in HELPER_TOOLS:
-                         logger.info(f"Helper Tool ({tool_name}) finished. Forcing Agent to EXECUTE SQL.")
-                         return {"messages": [HumanMessage(content=f"SYSTEM FEEDBACK: Research tool '{tool_name}' complete. You have the schema info. NOW you must write and execute the 'sql_db_query' to get the actual data rows.")]}
+                        "sql_db_get_column_info",
+                        "sql_db_query_distinct_values",  # ADD THIS
+                        "sql_db_sample_rows"  # ADD THIS
+                    ]
+                    
+                    if tool_name in HELPER_TOOLS:
+                        logger.info(f"Helper Tool ({tool_name}) finished. Forcing Agent to EXECUTE SQL.")
+                        return {"messages": [HumanMessage(content=f"SYSTEM FEEDBACK: Research tool '{tool_name}' complete. You have gathered information. NOW you MUST write and execute 'sql_db_query' to get the actual data rows that answer the user's question.")]}
 
         if not isinstance(last_message, ToolMessage) or last_message.name != "sql_db_query":
             return {"messages": []}
             
         sql_result = last_message.content
 
+        # Binary data detection
         if "b'\\" in sql_result or "bytearray" in str(sql_result).lower():
             logger.warning("Binary data detected in output. Triggering immediate retry.")
             return {"messages": [HumanMessage(content="SYSTEM FEEDBACK: Binary data detected (b'\\x00...'). Retry using HEX(column) or BIN_TO_UUID(column).")]}
 
+        # Extract user question and generated query for validation
         user_question = "Unknown"
         for msg in reversed(state["messages"]):
             if isinstance(msg, HumanMessage) and not msg.content.startswith("SYSTEM"):
@@ -304,10 +354,10 @@ class SQLAgentGenerator:
 
         generated_query = "Unknown"
         for msg in reversed(state["messages"]):
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                 if msg.tool_calls[0]["name"] == "sql_db_query":
-                     generated_query = msg.tool_calls[0]["args"].get("query")
-                     break
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                if msg.tool_calls[0]["name"] == "sql_db_query":
+                    generated_query = msg.tool_calls[0]["args"].get("query")
+                    break
 
         validation_prompt = answer_validation_prompt_module().format(
             question=user_question,
@@ -411,7 +461,7 @@ class SQLAgentGenerator:
         
         workflow.add_edge("generate_final_answer", END)
 
-        return workflow.compile(checkpointer=self.checkpointer)
+        return workflow.compile()
 
     def run(self, question: str, session_id: str = "default_session", config: RunnableConfig = None):
         """
@@ -426,7 +476,7 @@ class SQLAgentGenerator:
             str: The final natural language response from the agent.
         """
         config = config or {}
-        config["configurable"] = {"thread_id": session_id}
+        # config["configurable"] = {"thread_id": session_id}
         config["recursion_limit"] = 50 
         
         logger.info(f"Session: {session_id} | Query: {question}")
